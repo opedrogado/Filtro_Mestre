@@ -4,6 +4,8 @@ import requests
 import io
 import numpy as np
 import yfinance as yf
+import json
+import os
 
 # 1. Configuração inicial da página e CSS Suave
 st.set_page_config(page_title="Filtro Mestre", layout="wide")
@@ -54,6 +56,12 @@ def carregar_dados():
 with st.spinner("Garimpando dados no Fundamentus..."):
     df_acoes = carregar_dados()
 
+# Aplica favorito carregado antes dos widgets
+_chaves_filtro = ['pl_min', 'pl_max', 'pvp_min', 'pvp_max', 'dy_min', 'dy_max', 'roe_min', 'roe_max', 'cresc_min', 'liq_min']
+for _k in _chaves_filtro:
+    if '_load_' + _k in st.session_state:
+        st.session_state[_k] = st.session_state.pop('_load_' + _k)
+
 # 3. Controles precisos na barra lateral
 st.sidebar.header("Configure seus Filtros")
 
@@ -101,6 +109,61 @@ estrategia_ranking = st.sidebar.selectbox(
     ["Fórmula Mágica (Greenblatt)", "Método das Estrelas (Primo Rico)"]
 )
 
+# --- FILTROS FAVORITOS ---
+FILTROS_FILE = "filtros_favoritos.json"
+
+def carregar_favoritos():
+    if os.path.exists(FILTROS_FILE):
+        with open(FILTROS_FILE, 'r') as f:
+            return json.load(f)
+    return {}
+
+def salvar_favoritos(favoritos):
+    with open(FILTROS_FILE, 'w') as f:
+        json.dump(favoritos, f)
+
+favoritos = carregar_favoritos()
+
+st.sidebar.markdown("---")
+st.sidebar.markdown("**⭐ Filtros Favoritos**")
+
+def aplicar_favorito():
+    nome = st.session_state.get('fav_select')
+    if nome and nome != "— selecione —":
+        for chave, valor in favoritos[nome].items():
+            st.session_state['_load_' + chave] = valor
+
+if favoritos:
+    st.sidebar.selectbox(
+        "Carregar favorito:",
+        ["— selecione —"] + list(favoritos.keys()),
+        key='fav_select',
+        on_change=aplicar_favorito
+    )
+
+    fav_deletar = st.sidebar.selectbox("Excluir favorito:", ["— selecione —"] + list(favoritos.keys()), key='fav_delete')
+    if fav_deletar != "— selecione —":
+        if st.sidebar.button("🗑️ Excluir"):
+            del favoritos[fav_deletar]
+            salvar_favoritos(favoritos)
+            st.rerun()
+
+
+nome_novo = st.sidebar.text_input("Nome do favorito:", key='nome_favorito')
+if st.sidebar.button("💾 Salvar filtro atual"):
+    if nome_novo.strip():
+        favoritos[nome_novo.strip()] = {
+            'pl_min': pl_min, 'pl_max': pl_max,
+            'pvp_min': pvp_min, 'pvp_max': pvp_max,
+            'dy_min': dy_min, 'dy_max': dy_max,
+            'roe_min': roe_min, 'roe_max': roe_max,
+            'cresc_min': cresc_min, 'liq_min': liq_min,
+        }
+        salvar_favoritos(favoritos)
+        st.sidebar.success(f"'{nome_novo}' salvo!")
+        st.rerun()
+    else:
+        st.sidebar.warning("Digite um nome para o favorito.")
 
 # 4. Lógica de Filtragem Base
 df_filtrado = df_acoes[
@@ -326,6 +389,7 @@ if not df_filtrado.empty:
 else:
     st.info("Ajuste os filtros para liberar o simulador.")
 
+
 # =====================================================================
 # 6. GRÁFICOS HISTÓRICOS (Yahoo Finance)
 # =====================================================================
@@ -333,7 +397,7 @@ st.markdown("---")
 st.markdown("### 📈 Análise Histórica")
 
 if not df_filtrado.empty:
-    acao_escolhida = st.selectbox("Selecione uma ação para ver o histórico:", df_filtrado['Ticker'].tolist())
+    acao_escolhida = st.selectbox("Selecione uma ação para ver o histórico:", df_filtrado['Ticker'].tolist(), key='selectbox_historico')
 
     if acao_escolhida:
         ticker_yf = acao_escolhida + ".SA"
@@ -342,16 +406,33 @@ if not df_filtrado.empty:
             dados_historicos = t.history(period="5y")
             dividendos = t.dividends
 
-        aba_preco, aba_div = st.tabs(["📈 Preço (5 Anos)", "💰 Histórico de Dividendos"])
+        aba_preco, aba_div, aba_consist = st.tabs(["📈 Preço (5 Anos)", "💰 Histórico de Dividendos", "📊 Consistência"])
 
         with aba_preco:
             if not dados_historicos.empty:
-                st.line_chart(dados_historicos['Close'])
-                preco_atual = dados_historicos['Close'].iloc[-1]
-                c1, c2, c3 = st.columns(3)
+                df_preco = dados_historicos[['Close']].copy()
+                df_preco['MM50'] = df_preco['Close'].rolling(50).mean()
+                df_preco['MM200'] = df_preco['Close'].rolling(200).mean()
+
+                st.line_chart(df_preco[['Close', 'MM50', 'MM200']])
+
+                mm50_atual = df_preco['MM50'].iloc[-1]
+                mm200_atual = df_preco['MM200'].iloc[-1]
+
+                if mm50_atual > mm200_atual:
+                    sinal = "🟢 Golden Cross — MM50 acima da MM200 (tendência de alta)"
+                else:
+                    sinal = "🔴 Death Cross — MM50 abaixo da MM200 (tendência de baixa)"
+
+                st.info(sinal)
+
+                preco_atual = df_preco['Close'].iloc[-1]
+                c1, c2, c3, c4, c5 = st.columns(5)
                 c1.metric("Preço Atual", f"R$ {preco_atual:.2f}")
-                c2.metric("Máxima (5 anos)", f"R$ {dados_historicos['Close'].max():.2f}")
-                c3.metric("Mínima (5 anos)", f"R$ {dados_historicos['Close'].min():.2f}")
+                c2.metric("Máxima (5 anos)", f"R$ {df_preco['Close'].max():.2f}")
+                c3.metric("Mínima (5 anos)", f"R$ {df_preco['Close'].min():.2f}")
+                c4.metric("MM50", f"R$ {mm50_atual:.2f}")
+                c5.metric("MM200", f"R$ {mm200_atual:.2f}")
             else:
                 st.warning(f"Sem dados de preço para {acao_escolhida}.")
 
@@ -375,5 +456,58 @@ if not df_filtrado.empty:
                 st.dataframe(div_tabela.sort_values('Data', ascending=False), use_container_width=True, hide_index=True)
             else:
                 st.warning(f"Sem histórico de dividendos para {acao_escolhida}.")
+
+        with aba_consist:
+            with st.spinner("Analisando consistência histórica..."):
+                info = t.financials
+                div_hist = t.dividends
+
+            pontos = 0
+            max_pontos = 0
+            linhas_consist = []
+
+            if not info.empty and 'Net Income' in info.index:
+                lucros = info.loc['Net Income'].sort_index()
+                anos = lucros.index.year.tolist()
+
+                for i, (ano, lucro) in enumerate(zip(anos, lucros)):
+                    max_pontos += 3
+                    pts_ano = 0
+
+                    if lucro > 0:
+                        pts_ano += 2
+
+                    if not div_hist.empty:
+                        div_hist_local = div_hist.copy()
+                        div_hist_local.index = div_hist_local.index.tz_localize(None)
+                        pagou_div = div_hist_local[div_hist_local.index.year == ano].sum() > 0
+                        if pagou_div:
+                            pts_ano += 1
+
+                    pontos += pts_ano
+                    linhas_consist.append({
+                        'Ano': str(ano),
+                        'Lucro Líquido': f"R$ {lucro/1e6:.1f}M" if abs(lucro) >= 1e6 else f"R$ {lucro:.0f}",
+                        'Lucro Positivo': "✅" if lucro > 0 else "❌",
+                        'Pagou Dividendo': "✅" if (not div_hist.empty and div_hist_local[div_hist_local.index.year == ano].sum() > 0) else "❌",
+                        'Pontos': f"{pts_ano}/3"
+                    })
+
+            if max_pontos > 0:
+                pct = pontos / max_pontos * 100
+                if pct >= 80:
+                    conceito = "🟢 Alta Consistência"
+                elif pct >= 50:
+                    conceito = "🟡 Consistência Moderada"
+                else:
+                    conceito = "🔴 Baixa Consistência"
+
+                c1, c2 = st.columns(2)
+                c1.metric("Score de Consistência", f"{pontos}/{max_pontos} pts")
+                c2.metric("Conceito", conceito)
+
+                st.dataframe(pd.DataFrame(linhas_consist), use_container_width=True, hide_index=True)
+            else:
+                st.warning("Dados históricos insuficientes para calcular o score.")
 else:
     st.info("Ajuste os filtros na barra lateral para encontrar ações e desbloquear os gráficos.")
