@@ -6,20 +6,20 @@ import io
 # 1. Configuração inicial da página
 st.set_page_config(page_title="Filtro Mestre", layout="wide")
 st.title("Filtro Mestre - Ações B3")
-st.write("Filtre as melhores ações da B3 com precisão cirúrgica.")
+st.write("Filtre as melhores ações da B3 com precisão cirúrgica e veja o Ranking Final.")
 
 # 2. Função para carregar os dados DIRETO do site
 @st.cache_data(ttl="1h")
 def carregar_dados():
     url = 'https://www.fundamentus.com.br/resultado.php'
     headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
     }
     
     r = requests.get(url, headers=headers)
     html_content = io.StringIO(r.text)
     
-    # O Pandas já faz a leitura perfeita dos números aqui!
+    # O Pandas já lê os números (P/L, P/VP, Cotação) perfeitamente aqui
     df = pd.read_html(html_content, decimal=',', thousands='.', na_values=['-', ' - '])[0]
     
     df.columns = [
@@ -28,24 +28,26 @@ def carregar_dados():
         'mrgliq', 'liqcorr', 'roic', 'roe', 'liq2meses', 'patrimliq', 'divLpatrim', 'cresc_rec5'
     ]
     
-    # Limpamos APENAS as percentagens, porque o símbolo '%' faz o Pandas pensar que é texto
+    # Limpamos APENAS as porcentagens, que não são lidas como números por causa do '%'
     cols_perc = ['dy', 'mrgbruta', 'mrgebit', 'mrgliq', 'roic', 'roe', 'cresc_rec5']
     for col in cols_perc:
         df[col] = df[col].astype(str).str.replace('%', '', regex=False).str.replace('.', '', regex=False).str.replace(',', '.', regex=False)
         df[col] = pd.to_numeric(df[col], errors='coerce') / 100
         
-    # REMOVIDA a secção que estragava os números normais.
-    
-    # Removemos linhas que não têm as métricas exigidas pelos nossos novos filtros
+    # BUG CORRIGIDO AQUI: Apenas garantimos que as colunas já lidas pelo Pandas continuem numéricas, sem alterar os decimais!
+    cols_numeric = ['pl', 'pvp', 'divLpatrim', 'cotacao', 'evebit', 'liq2meses']
+    for col in cols_numeric:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+
     df = df.dropna(subset=['pl', 'pvp', 'dy', 'roe', 'liq2meses', 'cresc_rec5'])
         
     return df
 
-with st.spinner("A garimpar dados no Fundamentus..."):
+with st.spinner("Garimpando dados no Fundamentus..."):
     df_acoes = carregar_dados()
 
-# 3. Controlos precisos (Campos de Mínimo e Máximo lado a lado)
-st.sidebar.header("Configure os seus Filtros")
+# 3. Controles precisos (Campos de Mínimo e Máximo lado a lado)
+st.sidebar.header("Configure seus Filtros")
 
 st.sidebar.markdown("**P/L (Preço sobre Lucro)**")
 col1, col2 = st.sidebar.columns(2)
@@ -67,11 +69,11 @@ col1, col2 = st.sidebar.columns(2)
 roe_min = col1.number_input("Mín", value=15.0, step=1.0, key='roe_min')
 roe_max = col2.number_input("Máx", value=30.0, step=1.0, key='roe_max')
 
-st.sidebar.markdown("**Liquidez 2 Meses (R$)**")
-liq_min = st.sidebar.number_input("Mínimo", value=1000000.0, step=100000.0, key='liq_min')
-
 st.sidebar.markdown("**Crescimento Rec. 5a (%)**")
 cresc_min = st.sidebar.number_input("Mínimo", value=10.0, step=1.0, key='cresc_min')
+
+st.sidebar.markdown("**Liquidez 2 Meses (R$)**")
+liq_min = st.sidebar.number_input("Mínimo", value=1000000.0, step=100000.0, key='liq_min')
 
 # 4. Lógica de Filtragem Corrigida
 df_filtrado = df_acoes[
@@ -79,24 +81,43 @@ df_filtrado = df_acoes[
     (df_acoes['pvp'] >= pvp_min) & (df_acoes['pvp'] <= pvp_max) &
     (df_acoes['dy'] >= (dy_min / 100)) & (df_acoes['dy'] <= (dy_max / 100)) &
     (df_acoes['roe'] >= (roe_min / 100)) & (df_acoes['roe'] <= (roe_max / 100)) &
-    (df_acoes['liq2meses'] >= liq_min) &
-    (df_acoes['cresc_rec5'] >= (cresc_min / 100))
-]
+    (df_acoes['cresc_rec5'] >= (cresc_min / 100)) & 
+    (df_acoes['liq2meses'] >= liq_min)
+].copy()
+
+# =====================================================================
+# 4.5 SISTEMA DE PONTUAÇÃO (O RANKING FINAL)
+# =====================================================================
+df_filtrado['Pontuação'] = 0
+
+if not df_filtrado.empty:
+    # Menores valores = +1 ponto
+    df_filtrado.loc[df_filtrado.nsmallest(3, 'pl').index, 'Pontuação'] += 1
+    df_filtrado.loc[df_filtrado.nsmallest(3, 'pvp').index, 'Pontuação'] += 1
+    
+    # Maiores valores = +1 ponto
+    df_filtrado.loc[df_filtrado.nlargest(3, 'dy').index, 'Pontuação'] += 1
+    df_filtrado.loc[df_filtrado.nlargest(3, 'roe').index, 'Pontuação'] += 1
+    df_filtrado.loc[df_filtrado.nlargest(3, 'cresc_rec5').index, 'Pontuação'] += 1
+
+    # Organiza do maior pontuador para o menor
+    df_filtrado = df_filtrado.sort_values(by=['Pontuação', 'roe'], ascending=[False, False])
+
+# =====================================================================
 
 # 5. Exibição da Tabela
 st.markdown(f"### 🎯 Ações aprovadas nos filtros: **{len(df_filtrado)}** de {len(df_acoes)}")
 
-colunas_exibicao = ['Ticker', 'cotacao', 'pl', 'pvp', 'dy', 'roe', 'liq2meses', 'cresc_rec5']
+colunas_exibicao = ['Ticker', 'Pontuação', 'cotacao', 'pl', 'pvp', 'dy', 'roe', 'liq2meses', 'cresc_rec5']
 df_mostrar = df_filtrado[colunas_exibicao].copy()
 
-# Deixando os dados formatados com estética profissional
-df_mostrar['dy'] = [f"{(x * 100):.2f}%" if pd.notna(x) else "0.00%" for x in df_mostrar['dy']]
-df_mostrar['roe'] = [f"{(x * 100):.2f}%" if pd.notna(x) else "0.00%" for x in df_mostrar['roe']]
-df_mostrar['cresc_rec5'] = [f"{(x * 100):.2f}%" if pd.notna(x) else "0.00%" for x in df_mostrar['cresc_rec5']]
+if not df_mostrar.empty:
+    df_mostrar['Pontuação'] = df_mostrar['Pontuação'].astype(str) + " ⭐"
+    df_mostrar['dy'] = [f"{(x * 100):.2f}%" for x in df_mostrar['dy']]
+    df_mostrar['roe'] = [f"{(x * 100):.2f}%" for x in df_mostrar['roe']]
+    df_mostrar['cresc_rec5'] = [f"{(x * 100):.2f}%" for x in df_mostrar['cresc_rec5']]
+    df_mostrar['liq2meses'] = df_mostrar['liq2meses'].apply(lambda x: f"R$ {x:,.0f}".replace(",", "X").replace(".", ",").replace("X", "."))
 
-# Formatando a liquidez em Reais com máscara de milhar
-df_mostrar['liq2meses'] = df_mostrar['liq2meses'].apply(lambda x: f"R$ {x:,.0f}".replace(",", "X").replace(".", ",").replace("X", ".") if pd.notna(x) else "R$ 0")
+df_mostrar.columns = ['Ticker', 'Pontos', 'Cotação (R$)', 'P/L', 'P/VP', 'Div. Yield', 'ROE', 'Liquidez Diária', 'Cresc. 5 anos']
 
-df_mostrar.columns = ['Ticker', 'Cotação (R$)', 'P/L', 'P/VP', 'Div. Yield', 'ROE', 'Liquidez Diária', 'Cresc. 5 anos']
-
-st.dataframe(df_mostrar, use_container_width=True)
+st.dataframe(df_mostrar, use_container_width=True, hide_index=True)
