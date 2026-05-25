@@ -6,7 +6,7 @@ import io
 # 1. Configuração inicial da página
 st.set_page_config(page_title="Filtro Mestre", layout="wide")
 st.title("Filtro Mestre - Ações B3")
-st.write("Filtre as melhores ações da B3 em tempo real.")
+st.write("Filtre as melhores ações da B3 com precisão cirúrgica.")
 
 # 2. Função para carregar os dados DIRETO do site
 @st.cache_data(ttl="1h")
@@ -19,7 +19,7 @@ def carregar_dados():
     r = requests.get(url, headers=headers)
     html_content = io.StringIO(r.text)
     
-    # Lemos a tabela informando o padrão brasileiro de pontuação
+    # O Pandas já faz a leitura perfeita dos números aqui!
     df = pd.read_html(html_content, decimal=',', thousands='.', na_values=['-', ' - '])[0]
     
     df.columns = [
@@ -28,69 +28,75 @@ def carregar_dados():
         'mrgliq', 'liqcorr', 'roic', 'roe', 'liq2meses', 'patrimliq', 'divLpatrim', 'cresc_rec5'
     ]
     
-    # Limpamos as colunas de porcentagem
+    # Limpamos APENAS as percentagens, porque o símbolo '%' faz o Pandas pensar que é texto
     cols_perc = ['dy', 'mrgbruta', 'mrgebit', 'mrgliq', 'roic', 'roe', 'cresc_rec5']
     for col in cols_perc:
         df[col] = df[col].astype(str).str.replace('%', '', regex=False).str.replace('.', '', regex=False).str.replace(',', '.', regex=False)
         df[col] = pd.to_numeric(df[col], errors='coerce') / 100
         
-    # Limpamos as colunas numéricas tradicionais
-    cols_numeric = ['pl', 'pvp', 'divLpatrim', 'cotacao', 'evebit']
-    for col in cols_numeric:
-        df[col] = pd.to_numeric(df[col].astype(str).str.replace('.', '', regex=False).str.replace(',', '.', regex=False).str.replace(' ', '', regex=False).replace('-', 'NaN'), errors='coerce')
-
-    df = df.dropna(subset=['pl', 'pvp', 'dy', 'roic', 'divLpatrim', 'cresc_rec5'])
+    # REMOVIDA a secção que estragava os números normais.
+    
+    # Removemos linhas que não têm as métricas exigidas pelos nossos novos filtros
+    df = df.dropna(subset=['pl', 'pvp', 'dy', 'roe', 'liq2meses', 'cresc_rec5'])
         
     return df
 
-# Carregando a base de dados
-with st.spinner("Garimpando dados no Fundamentus..."):
+with st.spinner("A garimpar dados no Fundamentus..."):
     df_acoes = carregar_dados()
 
-# 3. Criando o menu lateral para os filtros (AGORA TODOS COM MÍNIMO E MÁXIMO)
-st.sidebar.header("Configure seus Filtros")
+# 3. Controlos precisos (Campos de Mínimo e Máximo lado a lado)
+st.sidebar.header("Configure os seus Filtros")
 
-# Filtro de Preço sobre Lucro
-pl_min, pl_max = st.sidebar.slider("P/L (Preço sobre Lucro)", -20.0, 50.0, (0.0, 20.0))
+st.sidebar.markdown("**P/L (Preço sobre Lucro)**")
+col1, col2 = st.sidebar.columns(2)
+pl_min = col1.number_input("Mín", value=3.0, step=0.5, key='pl_min')
+pl_max = col2.number_input("Máx", value=10.0, step=0.5, key='pl_max')
 
-# AJUSTE: Filtro de Preço sobre Valor Patrimonial (Mín e Máx)
-pvp_min, pvp_max = st.sidebar.slider("P/VP (Preço sobre Valor Patrimonial)", 0.0, 10.0, (0.0, 3.0))
+st.sidebar.markdown("**P/VP (Preço / Valor Patrimonial)**")
+col1, col2 = st.sidebar.columns(2)
+pvp_min = col1.number_input("Mín", value=0.5, step=0.1, key='pvp_min')
+pvp_max = col2.number_input("Máx", value=2.0, step=0.1, key='pvp_max')
 
-# AJUSTE: Filtro de Dividend Yield (Mín e Máx)
-dy_min, dy_max = st.sidebar.slider("Dividend Yield (%)", 0.0, 40.0, (5.0, 20.0))
+st.sidebar.markdown("**Dividend Yield (%)**")
+col1, col2 = st.sidebar.columns(2)
+dy_min = col1.number_input("Mín", value=7.0, step=0.5, key='dy_min')
+dy_max = col2.number_input("Máx", value=14.0, step=0.5, key='dy_max')
 
-# AJUSTE: Filtro de ROIC (Mín e Máx)
-roic_min, roic_max = st.sidebar.slider("ROIC (%)", -10.0, 50.0, (10.0, 40.0))
+st.sidebar.markdown("**ROE (%)**")
+col1, col2 = st.sidebar.columns(2)
+roe_min = col1.number_input("Mín", value=15.0, step=1.0, key='roe_min')
+roe_max = col2.number_input("Máx", value=30.0, step=1.0, key='roe_max')
 
-# AJUSTE: Filtro de Dívida Líquida sobre Patrimônio Líquido (Mín e Máx)
-div_pl_min, div_pl_max = st.sidebar.slider("Dívida Líquida / Patrimônio", -5.0, 10.0, (-1.0, 2.0))
+st.sidebar.markdown("**Liquidez 2 Meses (R$)**")
+liq_min = st.sidebar.number_input("Mínimo", value=1000000.0, step=100000.0, key='liq_min')
 
-# AJUSTE: Filtro de Crescimento de Receita nos últimos 5 anos (Mín e Máx)
-cresc_min, cresc_max = st.sidebar.slider("Crescimento de Receita (5 anos %)", -30.0, 100.0, (5.0, 50.0))
+st.sidebar.markdown("**Crescimento Rec. 5a (%)**")
+cresc_min = st.sidebar.number_input("Mínimo", value=10.0, step=1.0, key='cresc_min')
 
-
-# 4. Aplicando a lógica de filtragem atualizada no Pandas
+# 4. Lógica de Filtragem Corrigida
 df_filtrado = df_acoes[
     (df_acoes['pl'] >= pl_min) & (df_acoes['pl'] <= pl_max) &
     (df_acoes['pvp'] >= pvp_min) & (df_acoes['pvp'] <= pvp_max) &
     (df_acoes['dy'] >= (dy_min / 100)) & (df_acoes['dy'] <= (dy_max / 100)) &
-    (df_acoes['roic'] >= (roic_min / 100)) & (df_acoes['roic'] <= (roic_max / 100)) &
-    (df_acoes['divLpatrim'] >= div_pl_min) & (df_acoes['divLpatrim'] <= div_pl_max) &
-    (df_acoes['cresc_rec5'] >= (cresc_min / 100)) & (df_acoes['cresc_rec5'] <= (cresc_max / 100))
+    (df_acoes['roe'] >= (roe_min / 100)) & (df_acoes['roe'] <= (roe_max / 100)) &
+    (df_acoes['liq2meses'] >= liq_min) &
+    (df_acoes['cresc_rec5'] >= (cresc_min / 100))
 ]
 
-# 5. Exibindo os resultados na tela
+# 5. Exibição da Tabela
 st.markdown(f"### 🎯 Ações aprovadas nos filtros: **{len(df_filtrado)}** de {len(df_acoes)}")
 
-colunas_exibicao = ['Ticker', 'cotacao', 'pl', 'pvp', 'dy', 'roic', 'divLpatrim', 'cresc_rec5']
+colunas_exibicao = ['Ticker', 'cotacao', 'pl', 'pvp', 'dy', 'roe', 'liq2meses', 'cresc_rec5']
 df_mostrar = df_filtrado[colunas_exibicao].copy()
 
-# Formatando as colunas estéticas de forma segura
+# Deixando os dados formatados com estética profissional
 df_mostrar['dy'] = [f"{(x * 100):.2f}%" if pd.notna(x) else "0.00%" for x in df_mostrar['dy']]
-df_mostrar['roic'] = [f"{(x * 100):.2f}%" if pd.notna(x) else "0.00%" for x in df_mostrar['roic']]
+df_mostrar['roe'] = [f"{(x * 100):.2f}%" if pd.notna(x) else "0.00%" for x in df_mostrar['roe']]
 df_mostrar['cresc_rec5'] = [f"{(x * 100):.2f}%" if pd.notna(x) else "0.00%" for x in df_mostrar['cresc_rec5']]
 
-# Renomeando as colunas de forma profissional
-df_mostrar.columns = ['Ticker', 'Cotação (R$)', 'P/L', 'P/VP', 'Div. Yield', 'ROIC', 'Dív.Líq/PL', 'Cresc. 5 anos']
+# Formatando a liquidez em Reais com máscara de milhar
+df_mostrar['liq2meses'] = df_mostrar['liq2meses'].apply(lambda x: f"R$ {x:,.0f}".replace(",", "X").replace(".", ",").replace("X", ".") if pd.notna(x) else "R$ 0")
+
+df_mostrar.columns = ['Ticker', 'Cotação (R$)', 'P/L', 'P/VP', 'Div. Yield', 'ROE', 'Liquidez Diária', 'Cresc. 5 anos']
 
 st.dataframe(df_mostrar, use_container_width=True)
