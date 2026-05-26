@@ -1,11 +1,9 @@
 import streamlit as st
 import pandas as pd
-import requests
-import io
 import numpy as np
-import yfinance as yf
-import json
-import os
+from dados import carregar_dados, carregar_historico
+from calculos import calcular_valuation, calcular_ranking
+from favoritos import carregar_favoritos, render_favoritos
 
 # 1. Configuração inicial da página e CSS Suave
 st.set_page_config(page_title="Filtro Mestre", layout="wide")
@@ -19,48 +17,7 @@ st.markdown("""
 
 st.markdown("### 📊 Filtro Mestre — Ações B3")
 
-# 2. Função para carregar os dados DIRETO do site
-@st.cache_data(ttl="4h")
-def carregar_dados():
-    try:
-        url = 'https://www.fundamentus.com.br/resultado.php'
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-        r = requests.get(url, headers=headers, timeout=15)
-        r.raise_for_status()
-        html_content = io.StringIO(r.text)
-        df = pd.read_html(html_content, decimal=',', thousands='.', na_values=['-', ' - '])[0]
-
-        df.columns = [
-            'Ticker', 'cotacao', 'pl', 'pvp', 'psr', 'dy', 'pativo', 'pcapgiro',
-            'pebit', 'pativcircliq', 'evebit', 'evebitda', 'mrgbruta', 'mrgebit',
-            'mrgliq', 'liqcorr', 'roic', 'roe', 'liq2meses', 'patrimliq', 'divLpatrim', 'cresc_rec5'
-        ]
-
-        cols_perc = ['dy', 'mrgbruta', 'mrgebit', 'mrgliq', 'roic', 'roe', 'cresc_rec5']
-        for col in cols_perc:
-            df[col] = df[col].astype(str).str.replace('%', '', regex=False).str.replace('.', '', regex=False).str.replace(',', '.', regex=False)
-            df[col] = pd.to_numeric(df[col], errors='coerce') / 100
-
-        cols_numeric = ['pl', 'pvp', 'divLpatrim', 'cotacao', 'evebit', 'liq2meses']
-        for col in cols_numeric:
-            df[col] = pd.to_numeric(df[col], errors='coerce')
-
-        df = df.dropna(subset=['pl', 'pvp', 'dy', 'roe', 'liq2meses', 'cresc_rec5', 'evebit', 'roic'])
-        return df, None
-
-    except requests.exceptions.ConnectionError:
-        return None, "❌ Sem conexão com a internet. Verifique sua rede."
-    except requests.exceptions.Timeout:
-        return None, "⏱️ O site do Fundamentus demorou demais para responder. Tente novamente."
-    except requests.exceptions.HTTPError as e:
-        return None, f"❌ Erro HTTP ao acessar o Fundamentus: {e}"
-    except Exception as e:
-        return None, f"❌ Erro inesperado: {e}"
-
-@st.cache_data(ttl="30m")
-def carregar_historico(ticker):
-    t = yf.Ticker(ticker + ".SA")
-    return t.history(period="5y"), t.dividends, t.financials
+# 2. Funções em dados.py, calculos.py e favoritos.py
 
 with st.spinner("Garimpando dados no Fundamentus..."):
     df_acoes, erro = carregar_dados()
@@ -102,49 +59,12 @@ rank_map = {"🧮 Greenblatt": "Fórmula Mágica (Greenblatt)", "⭐ Estrelas (R
 estrategia_ranking = rank_map[st.sidebar.selectbox("Método", list(rank_map.keys()), key='ranking')]
 
 # --- FAVORITOS ---
-FILTROS_FILE = "filtros_favoritos.json"
-
-def carregar_favoritos():
-    if os.path.exists(FILTROS_FILE):
-        with open(FILTROS_FILE, 'r') as f:
-            return json.load(f)
-    return {}
-
-def salvar_favoritos(favoritos):
-    with open(FILTROS_FILE, 'w') as f:
-        json.dump(favoritos, f)
-
 favoritos = carregar_favoritos()
-
-def aplicar_favorito():
-    nome = st.session_state.get('fav_select')
-    if nome and nome != "—":
-        for chave, valor in favoritos[nome].items():
-            st.session_state['_load_' + chave] = valor
-
-if favoritos:
-    st.sidebar.selectbox("⭐", ["—"] + list(favoritos.keys()), key='fav_select', on_change=aplicar_favorito, label_visibility='visible')
-
-c1, c2, c3 = st.sidebar.columns([3, 1, 1])
-nome_novo   = c1.text_input("", placeholder="Salvar filtro...", key='nome_favorito', label_visibility='collapsed')
-if c2.button("💾", use_container_width=True):
-    if nome_novo.strip():
-        favoritos[nome_novo.strip()] = {
-            'pl_min': pl_min, 'pl_max': pl_max, 'pvp_min': pvp_min, 'pvp_max': pvp_max,
-            'dy_min': dy_min, 'dy_max': dy_max, 'roe_min': roe_min, 'roe_max': roe_max,
-            'cresc_min': cresc_min, 'liq_min': liq_min,
-        }
-        salvar_favoritos(favoritos)
-        st.rerun()
-    else:
-        st.sidebar.warning("Digite um nome.")
-
-fav_deletar = st.sidebar.selectbox("", ["— excluir —"] + list(favoritos.keys()), key='fav_delete', label_visibility='collapsed') if favoritos else "— excluir —"
-if favoritos and fav_deletar != "— excluir —":
-    if c3.button("🗑️", use_container_width=True):
-        del favoritos[fav_deletar]
-        salvar_favoritos(favoritos)
-        st.rerun()
+render_favoritos(favoritos, {
+    'pl_min': pl_min, 'pl_max': pl_max, 'pvp_min': pvp_min, 'pvp_max': pvp_max,
+    'dy_min': dy_min, 'dy_max': dy_max, 'roe_min': roe_min, 'roe_max': roe_max,
+    'cresc_min': cresc_min, 'liq_min': liq_min,
+})
 
 
 
@@ -169,32 +89,8 @@ if remover_bdrs:
 
 # 4.5 Cálculos de Valuation e Ranking
 if not df_filtrado.empty:
-    df_filtrado['lpa'] = df_filtrado['cotacao'] / df_filtrado['pl']
-    df_filtrado['vpa'] = df_filtrado['cotacao'] / df_filtrado['pvp']
-    df_filtrado['preco_graham'] = np.sqrt(np.maximum(22.5 * df_filtrado['lpa'] * df_filtrado['vpa'], 0))
-    df_filtrado['margem_seguranca'] = ((df_filtrado['preco_graham'] - df_filtrado['cotacao']) / df_filtrado['preco_graham']) * 100
-    df_filtrado['proventos_por_acao'] = df_filtrado['cotacao'] * df_filtrado['dy']
-    df_filtrado['preco_barsi'] = df_filtrado['proventos_por_acao'] / 0.06
-    df_filtrado['Status (Graham)'] = [
-        "🟢 Descontada" if m > 15 else ("🟡 Preço Justo" if m >= 0 else "🔴 Esticada")
-        for m in df_filtrado['margem_seguranca']
-    ]
-    df_filtrado['Dupla Margem'] = df_filtrado.apply(
-        lambda r: "🎯 Dupla Margem!" if r['cotacao'] < r['preco_graham'] and r['cotacao'] < r['preco_barsi'] else "", axis=1
-    )
-
-    if estrategia_ranking == "Método das Estrelas (Primo Rico)":
-        df_filtrado['Ranking_Final'] = 0
-        for col, asc in [('pl', True), ('pvp', True), ('dy', False), ('roe', False), ('cresc_rec5', False)]:
-            fn = df_filtrado.nsmallest if asc else df_filtrado.nlargest
-            df_filtrado.loc[fn(3, col).index, 'Ranking_Final'] += 1
-        df_filtrado = df_filtrado.sort_values(['Ranking_Final', 'margem_seguranca'], ascending=[False, False])
-    else:
-        df_filtrado = df_filtrado[df_filtrado['evebit'] > 0]
-        df_filtrado['rank_ev_ebit'] = df_filtrado['evebit'].rank(ascending=True)
-        df_filtrado['rank_roic'] = df_filtrado['roic'].rank(ascending=False)
-        df_filtrado['Ranking_Final'] = df_filtrado['rank_ev_ebit'] + df_filtrado['rank_roic']
-        df_filtrado = df_filtrado.sort_values(['Ranking_Final', 'margem_seguranca'], ascending=[True, False])
+    df_filtrado = calcular_valuation(df_filtrado)
+    df_filtrado = calcular_ranking(df_filtrado, estrategia_ranking)
 
 # 5. Abas principais
 st.markdown(f"**🎯 {len(df_filtrado)} ações aprovadas nos filtros**")
