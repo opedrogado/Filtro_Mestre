@@ -17,99 +17,91 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-st.title("Filtro Mestre - Ações B3")
-st.write("O terminal definitivo: Filtros Precisos + Valuation + Gráficos Históricos + Fórmula Mágica.")
+st.markdown("### 📊 Filtro Mestre — Ações B3")
 
 # 2. Função para carregar os dados DIRETO do site
-@st.cache_data(ttl="1h")
+@st.cache_data(ttl="4h")
 def carregar_dados():
-    url = 'https://www.fundamentus.com.br/resultado.php'
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'
-    }
-    
-    r = requests.get(url, headers=headers)
-    html_content = io.StringIO(r.text)
-    
-    df = pd.read_html(html_content, decimal=',', thousands='.', na_values=['-', ' - '])[0]
-    
-    df.columns = [
-        'Ticker', 'cotacao', 'pl', 'pvp', 'psr', 'dy', 'pativo', 'pcapgiro', 
-        'pebit', 'pativcircliq', 'evebit', 'evebitda', 'mrgbruta', 'mrgebit', 
-        'mrgliq', 'liqcorr', 'roic', 'roe', 'liq2meses', 'patrimliq', 'divLpatrim', 'cresc_rec5'
-    ]
-    
-    cols_perc = ['dy', 'mrgbruta', 'mrgebit', 'mrgliq', 'roic', 'roe', 'cresc_rec5']
-    for col in cols_perc:
-        df[col] = df[col].astype(str).str.replace('%', '', regex=False).str.replace('.', '', regex=False).str.replace(',', '.', regex=False)
-        df[col] = pd.to_numeric(df[col], errors='coerce') / 100
-        
-    cols_numeric = ['pl', 'pvp', 'divLpatrim', 'cotacao', 'evebit', 'liq2meses']
-    for col in cols_numeric:
-        df[col] = pd.to_numeric(df[col], errors='coerce')
+    try:
+        url = 'https://www.fundamentus.com.br/resultado.php'
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        r = requests.get(url, headers=headers, timeout=15)
+        r.raise_for_status()
+        html_content = io.StringIO(r.text)
+        df = pd.read_html(html_content, decimal=',', thousands='.', na_values=['-', ' - '])[0]
 
-    # Garantimos que também temos o EV/EBIT e ROIC preenchidos para a Fórmula Mágica
-    df = df.dropna(subset=['pl', 'pvp', 'dy', 'roe', 'liq2meses', 'cresc_rec5', 'evebit', 'roic'])
-        
-    return df
+        df.columns = [
+            'Ticker', 'cotacao', 'pl', 'pvp', 'psr', 'dy', 'pativo', 'pcapgiro',
+            'pebit', 'pativcircliq', 'evebit', 'evebitda', 'mrgbruta', 'mrgebit',
+            'mrgliq', 'liqcorr', 'roic', 'roe', 'liq2meses', 'patrimliq', 'divLpatrim', 'cresc_rec5'
+        ]
+
+        cols_perc = ['dy', 'mrgbruta', 'mrgebit', 'mrgliq', 'roic', 'roe', 'cresc_rec5']
+        for col in cols_perc:
+            df[col] = df[col].astype(str).str.replace('%', '', regex=False).str.replace('.', '', regex=False).str.replace(',', '.', regex=False)
+            df[col] = pd.to_numeric(df[col], errors='coerce') / 100
+
+        cols_numeric = ['pl', 'pvp', 'divLpatrim', 'cotacao', 'evebit', 'liq2meses']
+        for col in cols_numeric:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+
+        df = df.dropna(subset=['pl', 'pvp', 'dy', 'roe', 'liq2meses', 'cresc_rec5', 'evebit', 'roic'])
+        return df, None
+
+    except requests.exceptions.ConnectionError:
+        return None, "❌ Sem conexão com a internet. Verifique sua rede."
+    except requests.exceptions.Timeout:
+        return None, "⏱️ O site do Fundamentus demorou demais para responder. Tente novamente."
+    except requests.exceptions.HTTPError as e:
+        return None, f"❌ Erro HTTP ao acessar o Fundamentus: {e}"
+    except Exception as e:
+        return None, f"❌ Erro inesperado: {e}"
+
+@st.cache_data(ttl="30m")
+def carregar_historico(ticker):
+    t = yf.Ticker(ticker + ".SA")
+    return t.history(period="5y"), t.dividends, t.financials
 
 with st.spinner("Garimpando dados no Fundamentus..."):
-    df_acoes = carregar_dados()
+    df_acoes, erro = carregar_dados()
 
+if erro:
+    st.error(erro)
+    st.stop()
+
+st.caption(f"🕐 Dados carregados às {pd.Timestamp.now().strftime('%d/%m/%Y %H:%M')}")
+    
 # Aplica favorito carregado antes dos widgets
 _chaves_filtro = ['pl_min', 'pl_max', 'pvp_min', 'pvp_max', 'dy_min', 'dy_max', 'roe_min', 'roe_max', 'cresc_min', 'liq_min']
 for _k in _chaves_filtro:
     if '_load_' + _k in st.session_state:
         st.session_state[_k] = st.session_state.pop('_load_' + _k)
+# 3. Sidebar compacta
+st.sidebar.header("🔍 Filtros")
 
-# 3. Controles precisos na barra lateral
-st.sidebar.header("Configure seus Filtros")
+c1, c2 = st.sidebar.columns(2)
+pl_min    = c1.number_input("P/L Mín",    value=3.0,  step=0.5, key='pl_min')
+pl_max    = c2.number_input("P/L Máx",    value=15.0, step=0.5, key='pl_max')
+pvp_min   = c1.number_input("P/VP Mín",   value=0.5,  step=0.1, key='pvp_min')
+pvp_max   = c2.number_input("P/VP Máx",   value=3.0,  step=0.1, key='pvp_max')
+dy_min    = c1.number_input("DY% Mín",    value=5.0,  step=0.5, key='dy_min')
+dy_max    = c2.number_input("DY% Máx",    value=14.0, step=0.5, key='dy_max')
+roe_min   = c1.number_input("ROE% Mín",   value=10.0, step=1.0, key='roe_min')
+roe_max   = c2.number_input("ROE% Máx",   value=30.0, step=1.0, key='roe_max')
+cresc_min = c1.number_input("Cresc% Mín", value=5.0,  step=1.0, key='cresc_min')
+liq_min   = c2.number_input("Liq Mín(M)", value=1.0,  step=0.5, key='liq_min', help="Liquidez 2 meses em milhões de R$")
 
-st.sidebar.markdown("**P/L (Preço sobre Lucro)**")
-col1, col2 = st.sidebar.columns(2)
-pl_min = col1.number_input("Mín", value=3.0, step=0.5, key='pl_min')
-pl_max = col2.number_input("Máx", value=15.0, step=0.5, key='pl_max')
+c1, c2, c3 = st.sidebar.columns(3)
+remover_units = c1.checkbox("- Units", value=False)
+remover_bdrs  = c2.checkbox("- BDRs",  value=True)
 
-st.sidebar.markdown("**P/VP (Valor Patrimonial)**")
-col1, col2 = st.sidebar.columns(2)
-pvp_min = col1.number_input("Mín", value=0.5, step=0.1, key='pvp_min')
-pvp_max = col2.number_input("Máx", value=3.0, step=0.1, key='pvp_max')
+tipo_map = {"Todas": "Todas", "ON": "Ordinárias (Final 3)", "PN": "Preferenciais (Final 4)"}
+tipo_acao = tipo_map[c3.selectbox("Tipo", list(tipo_map.keys()), key='tipo_acao', label_visibility='collapsed')]
 
-st.sidebar.markdown("**Dividend Yield (%)**")
-col1, col2 = st.sidebar.columns(2)
-dy_min = col1.number_input("Mín", value=5.0, step=0.5, key='dy_min')
-dy_max = col2.number_input("Máx", value=14.0, step=0.5, key='dy_max')
+rank_map = {"🧮 Greenblatt": "Fórmula Mágica (Greenblatt)", "⭐ Estrelas (Rico)": "Método das Estrelas (Primo Rico)"}
+estrategia_ranking = rank_map[st.sidebar.selectbox("Método", list(rank_map.keys()), key='ranking')]
 
-st.sidebar.markdown("**ROE (%)**")
-col1, col2 = st.sidebar.columns(2)
-roe_min = col1.number_input("Mín", value=10.0, step=1.0, key='roe_min')
-roe_max = col2.number_input("Máx", value=30.0, step=1.0, key='roe_max')
-
-st.sidebar.markdown("**Crescimento Rec. 5a (%)**")
-cresc_min = st.sidebar.number_input("Mínimo", value=5.0, step=1.0, key='cresc_min')
-
-st.sidebar.markdown("**Liquidez 2 Meses (R$)**")
-liq_min = st.sidebar.number_input("Mínimo", value=1000000.0, step=100000.0, key='liq_min')
-
-# --- FILTROS ANTI-ARMADILHA ---
-st.sidebar.markdown("---")
-st.sidebar.markdown("**⚙️ Filtros Estruturais**")
-
-tipo_acao = st.sidebar.radio(
-    "Tipo de Ação:",
-    ["Todas", "Ordinárias (Final 3)", "Preferenciais (Final 4)"]
-)
-remover_units = st.sidebar.checkbox("Remover Units (11)", value=False)
-remover_bdrs = st.sidebar.checkbox("Remover BDRs (32-35)", value=True)
-
-# --- NOVA SELEÇÃO DE ESTRATÉGIA DE RANKING ---
-st.sidebar.markdown("---")
-estrategia_ranking = st.sidebar.selectbox(
-    "🏆 Estratégia de Ranking:",
-    ["Fórmula Mágica (Greenblatt)", "Método das Estrelas (Primo Rico)"]
-)
-
-# --- FILTROS FAVORITOS ---
+# --- FAVORITOS ---
 FILTROS_FILE = "filtros_favoritos.json"
 
 def carregar_favoritos():
@@ -124,46 +116,37 @@ def salvar_favoritos(favoritos):
 
 favoritos = carregar_favoritos()
 
-st.sidebar.markdown("---")
-st.sidebar.markdown("**⭐ Filtros Favoritos**")
-
 def aplicar_favorito():
     nome = st.session_state.get('fav_select')
-    if nome and nome != "— selecione —":
+    if nome and nome != "—":
         for chave, valor in favoritos[nome].items():
             st.session_state['_load_' + chave] = valor
 
 if favoritos:
-    st.sidebar.selectbox(
-        "Carregar favorito:",
-        ["— selecione —"] + list(favoritos.keys()),
-        key='fav_select',
-        on_change=aplicar_favorito
-    )
+    st.sidebar.selectbox("⭐", ["—"] + list(favoritos.keys()), key='fav_select', on_change=aplicar_favorito, label_visibility='visible')
 
-    fav_deletar = st.sidebar.selectbox("Excluir favorito:", ["— selecione —"] + list(favoritos.keys()), key='fav_delete')
-    if fav_deletar != "— selecione —":
-        if st.sidebar.button("🗑️ Excluir"):
-            del favoritos[fav_deletar]
-            salvar_favoritos(favoritos)
-            st.rerun()
-
-
-nome_novo = st.sidebar.text_input("Nome do favorito:", key='nome_favorito')
-if st.sidebar.button("💾 Salvar filtro atual"):
+c1, c2, c3 = st.sidebar.columns([3, 1, 1])
+nome_novo   = c1.text_input("", placeholder="Salvar filtro...", key='nome_favorito', label_visibility='collapsed')
+if c2.button("💾", use_container_width=True):
     if nome_novo.strip():
         favoritos[nome_novo.strip()] = {
-            'pl_min': pl_min, 'pl_max': pl_max,
-            'pvp_min': pvp_min, 'pvp_max': pvp_max,
-            'dy_min': dy_min, 'dy_max': dy_max,
-            'roe_min': roe_min, 'roe_max': roe_max,
+            'pl_min': pl_min, 'pl_max': pl_max, 'pvp_min': pvp_min, 'pvp_max': pvp_max,
+            'dy_min': dy_min, 'dy_max': dy_max, 'roe_min': roe_min, 'roe_max': roe_max,
             'cresc_min': cresc_min, 'liq_min': liq_min,
         }
         salvar_favoritos(favoritos)
-        st.sidebar.success(f"'{nome_novo}' salvo!")
         st.rerun()
     else:
-        st.sidebar.warning("Digite um nome para o favorito.")
+        st.sidebar.warning("Digite um nome.")
+
+fav_deletar = st.sidebar.selectbox("", ["— excluir —"] + list(favoritos.keys()), key='fav_delete', label_visibility='collapsed') if favoritos else "— excluir —"
+if favoritos and fav_deletar != "— excluir —":
+    if c3.button("🗑️", use_container_width=True):
+        del favoritos[fav_deletar]
+        salvar_favoritos(favoritos)
+        st.rerun()
+
+
 
 # 4. Lógica de Filtragem Base
 df_filtrado = df_acoes[
@@ -172,7 +155,7 @@ df_filtrado = df_acoes[
     (df_acoes['dy'] >= (dy_min / 100)) & (df_acoes['dy'] <= (dy_max / 100)) &
     (df_acoes['roe'] >= (roe_min / 100)) & (df_acoes['roe'] <= (roe_max / 100)) &
     (df_acoes['cresc_rec5'] >= (cresc_min / 100)) &
-    (df_acoes['liq2meses'] >= liq_min)
+    (df_acoes['liq2meses'] >= liq_min * 1_000_000)
 ].copy()
 
 if tipo_acao == "Ordinárias (Final 3)":
@@ -342,11 +325,10 @@ with aba_hist:
         acao_escolhida = st.selectbox("Selecione uma ação:", df_filtrado['Ticker'].tolist(), key='selectbox_historico')
         if acao_escolhida:
             with st.spinner(f"Baixando dados de {acao_escolhida}..."):
-                t = yf.Ticker(acao_escolhida + ".SA")
-                dados_historicos = t.history(period="5y")
-                dividendos = t.dividends
+                dados_historicos, dividendos, financials_cache = carregar_historico(acao_escolhida)
 
             sub_preco, sub_div, sub_consist = st.tabs(["📈 Preço", "💰 Dividendos", "📊 Consistência"])
+
 
             with sub_preco:
                 if not dados_historicos.empty:
@@ -384,8 +366,9 @@ with aba_hist:
                     st.warning("Sem histórico de dividendos.")
 
             with sub_consist:
-                info = t.financials
-                div_hist = t.dividends
+                info = financials_cache
+                div_hist = dividendos
+
                 pontos, max_pontos, linhas_consist = 0, 0, []
 
                 if not info.empty and 'Net Income' in info.index:
