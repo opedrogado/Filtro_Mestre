@@ -1,0 +1,15 @@
+name: Manter Streamlit Acordado
+
+on:
+  schedule:
+    # Corre de 10 em 10 horas automaticamente
+    - cron: "0 */10 * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Visitar o site do Filtro Mestre
+        # IMPORTANTE: Substitua o link abaixo pelo link real do seu Streamlit!
+        run: curl -sSf https://filtromestre.streamlit.app/ > /dev/null
