@@ -11,5 +11,4 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Visitar o site do Filtro Mestre
-        # IMPORTANTE: Substitua o link abaixo pelo link real do seu Streamlit!
         run: curl -sSf https://filtromestre.streamlit.app/ > /dev/null
